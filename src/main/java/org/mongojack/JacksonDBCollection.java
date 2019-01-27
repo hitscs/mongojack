@@ -24,6 +24,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
+import com.fasterxml.jackson.databind.SerializationFeature;
 import org.mongojack.internal.FetchableDBRef;
 import org.mongojack.internal.JacksonCollectionKey;
 import org.mongojack.internal.MongoJackModule;
@@ -90,7 +91,15 @@ public class JacksonDBCollection<T, K> {
          * to the server, which means WriteResult.getSavedId() getSavedObject()
          * will not work. Hence it is disabled by default.
          */
-        USE_STREAM_SERIALIZATION(false);
+        USE_STREAM_SERIALIZATION(false),
+
+        /**
+         * For Java 8 time objects introduced by JSR 310, this feature will enable
+         * or disable the writing of dates as timestamps for MongoDB. When disabled,
+         * a LocalDateTime will be an array of ints, [YYYY, M, D, H, m, s, S] but,
+         * when enabled, will be a string "YYYY-MM-DDTHH:mm:ss.S" per the ISO format.
+         */
+        WRITE_DATES_AS_TIMESTAMPS(true);
 
         Feature(boolean enabledByDefault) {
             this.enabledByDefault = enabledByDefault;
@@ -237,6 +246,25 @@ public class JacksonDBCollection<T, K> {
     }
 
     /**
+     * Wraps a DB collection in a JacksonDBCollection
+     * 
+     * @param dbCollection The DB collection to wrap
+     * @param type The type of objects to deserialize to
+     * @param keyType The type of the objects key
+     * @param objectMapper The ObjectMapper to configure.
+     * @param view The JSON view to use for serialization
+     * @return The wrapped collection
+     */
+    public static <T, K> JacksonDBCollection<T, K> wrap(
+                                                        DBCollection dbCollection, Class<T> type, Class<K> keyType,
+                                                        ObjectMapper objectMapper,
+                                                        Class<?> view) {
+        MongoJackModule.configure(objectMapper);
+        return new JacksonDBCollection<T, K>(dbCollection, objectMapper.constructType(type),
+                                             objectMapper.constructType(keyType), objectMapper, view, null);
+    }
+
+    /**
      * Enable the given feature
      * 
      * @param feature
@@ -245,6 +273,9 @@ public class JacksonDBCollection<T, K> {
      */
     public JacksonDBCollection<T, K> enable(Feature feature) {
         features.put(feature, true);
+        if (feature == Feature.WRITE_DATES_AS_TIMESTAMPS) {
+            objectMapper.configure(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS, true);
+        }
         return this;
     }
 
@@ -257,6 +288,9 @@ public class JacksonDBCollection<T, K> {
      */
     public JacksonDBCollection<T, K> disable(Feature feature) {
         features.put(feature, false);
+        if (feature == Feature.WRITE_DATES_AS_TIMESTAMPS) {
+            objectMapper.configure(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS, false);
+        }
         return this;
     }
 
@@ -2138,7 +2172,7 @@ public class JacksonDBCollection<T, K> {
         }
         BsonObjectGenerator generator = new BsonObjectGenerator();
         try {
-            objectMapper.writeValue(generator, object);
+            objectMapper.writerWithView(view).writeValue(generator, object);
         } catch (JsonMappingException e) {
             throw new MongoJsonMappingException(e);
         } catch (IOException e) {
@@ -2229,7 +2263,7 @@ public class JacksonDBCollection<T, K> {
             return (T) ((JacksonDBObject) dbObject).getObject();
         }
         try {
-            return (T) objectMapper.readValue(new BsonObjectTraversingParser(
+            return (T) objectMapper.readerWithView(view).readValue(new BsonObjectTraversingParser(
                     this, dbObject, objectMapper), type);
         } catch (JsonMappingException e) {
             throw new MongoJsonMappingException(e);
@@ -2258,7 +2292,7 @@ public class JacksonDBCollection<T, K> {
             return (S) ((JacksonDBObject) dbObject).getObject();
         }
         try {
-            return objectMapper.readValue(new BsonObjectTraversingParser(this,
+            return objectMapper.readerWithView(view).readValue(new BsonObjectTraversingParser(this,
                     dbObject, objectMapper), clazz);
         } catch (JsonMappingException e) {
             throw new MongoJsonMappingException(e);
@@ -2280,6 +2314,21 @@ public class JacksonDBCollection<T, K> {
      * @throws MongoException
      */
     public static <S> S convertFromDbObject(DBObject dbObject, Class<S> clazz, ObjectMapper objectMapper) throws MongoException {
+        return convertFromDbObject(dbObject, clazz, objectMapper, null);
+    }
+
+    /**
+     * This method provides a static method to convert a DBObject into a given class. If the ObjectMapper is null, use a
+     * default ObjectMapper
+     * 
+     * @param dbObject
+     * @param clazz
+     * @param objectMapper
+     * @param view
+     * @return
+     * @throws MongoException
+     */
+    public static <S> S convertFromDbObject(DBObject dbObject, Class<S> clazz, ObjectMapper objectMapper, Class<?> view) throws MongoException {
         if (dbObject == null) {
             return null;
         }
@@ -2289,7 +2338,7 @@ public class JacksonDBCollection<T, K> {
             return (S) ((JacksonDBObject) dbObject).getObject();
         }
         try {
-            return objectMapper.readValue(new BsonObjectTraversingParser(null,
+            return objectMapper.readerWithView(view).readValue(new BsonObjectTraversingParser(null,
                     dbObject, objectMapper), clazz);
         } catch (JsonMappingException e) {
             throw new MongoJsonMappingException(e);
